@@ -1,0 +1,202 @@
+/*
+ * DDO tooltip panel — structural styles.
+ * Theme-specific image URLs are provided via CSS custom properties set inline
+ * by the view (--img-top-left, --img-sidebar-left-back, etc.).
+ */
+
+/* ── Panel frame ──────────────────────────────────────────────────────── */
+
+.panel-container {
+    color: #C0C0C0;
+    width: 473px;
+    display: flex;
+    flex-direction: row;
+    font-family: Verdana, Geneva, Tahoma, sans-serif;
+    font-size: 12px;
+    line-height: 1.35em;
+}
+
+.panel-left-sidebar  { width: 50px; position: relative; display: flex; flex-direction: column; }
+.panel-right-sidebar { width: 48px; position: relative; display: flex; flex-direction: column; }
+.panel-left-sidebar  div { width: 50px; }
+.panel-right-sidebar div { width: 48px; }
+
+/* Top corners — static neutral background + theme image overlay */
+.panel-left-top-content  { height: 37px; background-image: url('/images/background-top-left.png');  background-repeat: no-repeat; position: relative; z-index: 1; }
+.panel-right-top-content { height: 37px; background-image: url('/images/background-top-right.png'); background-repeat: no-repeat; position: relative; z-index: 1; }
+.panel-left-top-image    { height: 37px; background-image: var(--img-top-left);  background-repeat: no-repeat; }
+.panel-right-top-image   { height: 37px; background-image: var(--img-top-right); background-repeat: no-repeat; }
+
+/* Sidebars */
+.panel-left-mid-content  { flex-grow: 10; display: flex; background-image: var(--img-sidebar-left-back);  background-repeat: repeat-y; position: relative; z-index: 1; }
+.panel-right-mid-content { flex-grow: 10; display: flex; background-image: var(--img-sidebar-right-back); background-repeat: repeat-y; position: relative; z-index: 1; }
+.panel-left-sidebar-image  { min-height: 65px; height: 100%; flex-grow: 10; overflow: hidden; position: relative; z-index: 1; display: flex; flex-direction: column; background-image: var(--img-sidebar-left-top);  background-repeat: no-repeat; }
+.panel-right-sidebar-image { min-height: 65px; height: 100%; flex-grow: 10; overflow: hidden; position: relative; z-index: 1; display: flex; flex-direction: column; background-image: var(--img-sidebar-right-top); background-repeat: no-repeat; }
+.panel-left-fangle  { flex-grow: 10; z-index: 401; }
+.panel-right-fangle { flex-grow: 10; z-index: 401; }
+.panel-left-sidebar-bottom-image  { align-self: flex-end; min-height: 53px; z-index: 201; position: relative; background-image: var(--img-sidebar-left-bottom);  background-repeat: no-repeat; }
+.panel-right-sidebar-bottom-image { align-self: flex-end; min-height: 53px; z-index: 201; position: relative; background-image: var(--img-sidebar-right-bottom); background-repeat: no-repeat; }
+
+/* Bottom corners */
+.panel-left-bottom-content  { align-self: flex-end; min-height: 43px; z-index: 1; background-image: url('/images/background-bottom-left.png');  background-repeat: no-repeat; }
+.panel-right-bottom-content { align-self: flex-end; min-height: 43px; z-index: 1; background-image: url('/images/background-bottom-right.png'); background-repeat: no-repeat; }
+.panel-left-bottom-image    { height: 43px; z-index: 201; position: relative; background-image: var(--img-bottom-left-bottom);  background-repeat: no-repeat; }
+.panel-right-bottom-image   { height: 43px; z-index: 201; position: relative; background-image: var(--img-bottom-right-bottom); background-repeat: no-repeat; }
+
+/* Middle column */
+.panel-middle {
+    width: 375px;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+}
+.panel-middle > div { max-width: 375px; }
+
+.panel-middle-header {
+    height: 37px;
+    background-image: url('/images/background-top-middle.png');
+    background-repeat: no-repeat;
+    position: relative;
+}
+.panel-middle-header-image {
+    height: 37px;
+    background-image: var(--img-topbar-header);
+    background-repeat: no-repeat;
+    position: relative;
+}
+.panel-middle-body-container {
+    background-image: url('/images/background-mid.png');
+    display: flex;
+    flex-direction: column;
+    min-height: 76px;
+    position: relative;
+    overflow: hidden;
+}
+.panel-middle-top-shadow {
+    position: relative;
+    display: flex;
+    background-image: var(--img-topbar-shadow);
+    background-repeat: no-repeat;
+}
+.panel-middle-body-content {
+    min-height: 76px;
+    position: relative;
+    padding: 4px 0 8px 0;
+    display: flex;
+    flex-direction: column;
+    background-image: var(--img-middle-bottom-bartop);
+    background-repeat: no-repeat;
+    background-position: bottom;
+}
+.panel-middle-weight { width: 112px; text-align: center; }
+.panel-middle-footer {
+    background-image: url('/images/background-bottom-middle.png');
+    height: 43px;
+    background-repeat: no-repeat;
+}
+.panel-middle-footer-image {
+    height: 43px;
+    background-image: var(--img-middle-bottom-barbottom);
+    background-repeat: no-repeat;
+}
+.panel-middle-footer-data {
+    display: flex;
+    flex-direction: row;
+    font-size: 12px;
+    padding: 1px 8px 0 0;
+}
+
+/* Platinum fangle (theme-specific override) */
+.theme-platinum .panel-left-fangle {
+    background-image: url('/images/platinum/platinum-left-fangle.png');
+    background-repeat: no-repeat;
+    background-position-y: 68%;
+}
+.theme-platinum .panel-right-fangle {
+    background-image: url('/images/platinum/platinum-right-fangle.png');
+    background-repeat: no-repeat;
+    background-position-y: 68%;
+    background-position-x: 11px;
+}
+
+/* ── Panel content ────────────────────────────────────────────────────── */
+
+.panel-item      { font-size: 13px; color: #C0C0C0; width: 100%; text-align: center; }
+.panel-item-name { margin-top: -2px; text-align: center; }
+.type-and-diff-wrapper { text-align: center; }
+.panel-main-row-one      { display: flex; flex-direction: row; position: relative; min-height: 40px; }
+.panel-main-row-two      { display: flex; flex-direction: column; }
+.panel-main-icon         { position: absolute; left: 5px; top: 2px; }
+.panel-main-spacer-after-name { width: 375px; height: 11px; }
+.panel-main-accept-sentience  { color: #FFCA44; text-align: center; }
+.panel-main-min-level, .panel-main-binding { padding-bottom: 3px; color: #C0C0C0; }
+.panel-main-bound-line { padding-bottom: 3px; color: #C0C0C0; }
+.panel-main-proficiency, .panel-main-race-excluded, .panel-main-exclusive { padding-bottom: 3px; color: #C0C0C0; }
+.panel-main-description { font-size: 12px; line-height: 1.3em; color: #C0C0C0; padding: 4px 0; }
+.panel-main-effect-list { color: #ABA060; margin-bottom: 4px; }
+.panel-main-effect-header { color: #C0C0C0; font-size: 12px; line-height: 1.4em; padding-bottom: 2px; }
+.panel-main-effect      { line-height: 1.2em; }
+.panel-main-effect-list-name,
+.panel-sub-effect        { font-size: 12px; color: white; }
+.panel-main-effect-list-name .effect-desc { color: #ABA060; font-size: 12px; }
+.panel-set-bonus-tier { padding-left: 5px; }
+.panel-set-bonus-tier::before { content: '\2022  '; }
+.panel-equip-slot { text-align: right; color: #C0C0C0; font-size: 12px; }
+.panel-main-effect-list-name::before,
+.panel-sub-effect::before {
+    content: ' ';
+    background-image: url('/images/effect-arrow.png');
+    background-size: contain;
+    background-repeat: no-repeat;
+    width: 4px; height: 8px;
+    display: inline-block;
+    margin-right: 6px; margin-left: 2px;
+}
+.panel-sub-effect { padding-left: 13px; }
+.panel-main-weapon > div { padding-bottom: 3px; line-height: 1.24em; }
+.panel-main-weapon > div > span:first-child { color: white; padding-right: 4px; }
+.panel-main-shield > div { padding-bottom: 3px; line-height: 1.24em; }
+.panel-main-shield > div > span:first-child { color: white; padding-right: 4px; }
+.panel-main-armor > div { padding-bottom: 2px; }
+.panel-main-armor > div > span:first-child { color: white; padding-right: 4px; }
+.panel-main-shield-bonus            { color: #66FF99; }
+.panel-main-shield-damage-reduction { color: #66FF99; }
+.panel-main-set-bonus-header { color: #C0C0C0; padding-bottom: 3px; }
+.panel-main-set-bonus { padding-bottom: 3px; }
+.panel-main-set-bonus-name { color: #79f2e6; padding-bottom: 1px; }
+.panel-main-set-bonus-line { color: #C0C0C0; font-size: 12px; padding-bottom: 1px; }
+.panel-augment-slot-name { color: #88AAFF; }
+.panel-augment-empty { color: #C0C0C0; }
+.panel-main-clicky { margin-top: 3px; color: #ABA060; }
+.clicky-header { display: flex; gap: 4px; align-items: flex-start; }
+.clicky-icon { flex-shrink: 0; }
+.clicky-spell-info { display: flex; flex-direction: column; }
+.clicky-spell-info > div { padding-bottom: 1px; }
+.clicky-spell-name { font-weight: bold; color: #FFFFFF; }
+.clicky-spell-desc { color: #ABA060; margin-top: 2px; }
+.clicky-caster-level { color: #C0C0C0; }
+.clicky-charges { margin-top: 1px; margin-bottom: 2px; background-image: url('/images/charge-background.png'); background-repeat: repeat-x; color: #80FF80; padding: 1px 4px; text-align: center; text-shadow: 1px 1px 2px #000, -1px -1px 2px #000; }
+.armor-ac-value { color: #00FF00; }
+.panel-main-durability {
+    background-image: url('/images/item-strength-background.png');
+    background-repeat: repeat-x;
+    height: 25px;
+    display: flex; align-items: center; margin-top: 2px;
+}
+.panel-main-durability-text {
+    width: 373px;
+    text-align: center; font-size: 9px; color: #58D1FF;
+    text-shadow: 1px 1px #000000;
+    line-height: 1.15;
+}
+.panel-middle-base-value { flex-grow: 1; font-size: 12px; color: #C0C0C0; margin-left: 14px; }
+.panel-middle-weight { font-size: 12px; color: #C0C0C0; }
+
+/* ── Recipe table ─────────────────────────────────────────────────────── */
+
+.recipe-device { font-weight: bold; margin-top: 6px; margin-bottom: 2px; }
+.recipe-table { border-collapse: collapse; font-size: 11.5px; width: 100%; margin-bottom: 6px; }
+.recipe-table th,
+.recipe-table td { border: 1px solid #555; padding: 2px 5px; vertical-align: top; }
+.recipe-table th { background: #2a2a2a; }
+.recipe-name-row td { background: #1e1e1e; font-style: italic; color: #c0c0c0; }

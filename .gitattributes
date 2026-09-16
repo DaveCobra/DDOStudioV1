@@ -1,0 +1,27 @@
+* text=auto
+
+# Windows scripts must retain Windows line endings.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# Keep source and documentation text normalized in the repository.
+*.cs text eol=lf
+*.csproj text eol=lf
+*.sln text eol=crlf
+*.html text eol=lf
+*.css text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+
+# Binary assets and packaged documents.
+*.zip binary
+*.pdf binary
+*.docx binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.bmp binary
+*.ico binary

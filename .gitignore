@@ -1,0 +1,44 @@
+# .NET build output
+bin/
+obj/
+artifacts/
+publish/
+
+# Visual Studio / Rider / VS Code user state
+.vs/
+.idea/
+.vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Test and coverage output
+TestResults/
+coverage/
+*.coverage
+*.coveragexml
+
+# NuGet packages and generated package files
+packages/
+*.nupkg
+*.snupkg
+
+# Installer output
+installer/Output/
+Output/
+
+# Runtime logs, caches, and local data
+*.log
+cache/
+temp/
+tmp/
+
+# OS metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Local DDO data files (not distributable source)
+*.dat
+*.datx

@@ -1,0 +1,6 @@
+@DdoDatApi_HostAddress = http://localhost:5138
+
+GET {{DdoDatApi_HostAddress}}/RawDat/IdRanges
+Accept: application/json
+
+###

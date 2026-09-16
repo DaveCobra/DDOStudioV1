@@ -1,0 +1,30 @@
+DDO Studio 1.7.2 - Final Source Build
+
+Model Library
+-------------
+- Keeps standalone Weapon and Shield records in normal name search and View All.
+- Keeps the old category/filter dropdown removed.
+- Keeps worn/composed equipment classes out of the public model browser when they are not reliable standalone models.
+- Keeps the internal Equipment metadata index for resolver code without exposing every equipment record in the public model list.
+- Uses model-index schema 7 so incompatible older caches rebuild automatically.
+
+Weapon viewer defaults
+----------------------
+- All Weapon records (WeenieType 0x00020081) default to Position X 0.00x, Position Y 1.40x, Position Z 0.00x.
+- All Weapon records default to Rotate X 90 degrees, Rotate Y 0 degrees, Rotate Z 0 degrees.
+- Reset Model Transform restores those Weapon defaults.
+- Model transforms remain independent from the pedestal. Position Y does not move the pedestal.
+
+Animation defaults and names
+----------------------------
+- Weapon previews prefer animation 0x05005943 when it is in the validated compatible list and force Loop on.
+- If 0x05005943 is unavailable for a Weapon, compatible 0x05000440 is the fallback.
+- Other models prefer compatible 0x05000440.
+- Adds a curated built-in animation-name database at src\DDOAssetStudio\viewer\animation-names.json.
+- LocalAppData animation-aliases.json remains a user-only override and is not bundled.
+
+Documentation and privacy
+-------------------------
+- Includes the updated 1.7.2 technical documentation in DOCX and PDF form, based on the earlier technical manual but updated to the final architecture.
+- Includes only current implementation behavior and the verified engineering path that led to it; discarded one-off investigations are not part of the final documentation set.
+- Release/source packages exclude LocalAppData state, logs, preview caches, screenshots, PDBs, user alias files, and machine-specific paths.

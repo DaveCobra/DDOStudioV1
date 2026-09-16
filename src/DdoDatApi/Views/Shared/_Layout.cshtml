@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>@ViewData["Title"]</title>
+    <link rel="stylesheet" href="/css/item.css">
+    <link rel="stylesheet" href="/css/panel.css">
+    @await RenderSectionAsync("Styles", required: false)
+</head>
+<body>
+    @RenderBody()
+    <footer class="site-footer">
+        <span>All work from this site is free to use under the MIT license.</span>
+        <label>
+            <input type="checkbox" id="hide-descs-cb"> Hide Descriptions
+        </label>
+    </footer>
+    <script>
+        (function () {
+            function getCookie(name) {
+                var v = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+                return v ? v.pop() : '';
+            }
+            function setCookie(name, value) {
+                document.cookie = name + '=' + value + ';path=/;max-age=31536000';
+            }
+            var cb = document.getElementById('hide-descs-cb');
+            if (getCookie('hideDescs') === '1') {
+                cb.checked = true;
+                document.body.classList.add('hide-descs');
+            }
+            cb.addEventListener('change', function () {
+                if (this.checked) {
+                    document.body.classList.add('hide-descs');
+                    setCookie('hideDescs', '1');
+                } else {
+                    document.body.classList.remove('hide-descs');
+                    setCookie('hideDescs', '0');
+                }
+            });
+        })();
+    </script>
+</body>
+</html>

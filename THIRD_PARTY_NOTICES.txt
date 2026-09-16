@@ -1,0 +1,15 @@
+DDO Studio 1.7.2 - Third-Party Notices
+
+DDO Studio is not affiliated with Standing Stone Games or Daybreak Game Company.
+Game data is read from the end user's own local Dungeons & Dragons Online installation and is not redistributed with DDO Studio.
+
+ENVIRONMENT ARTWORK
+
+DDO Studio does not bundle skybox, HDR, cubemap, or other environment artwork.
+Environment files selected by an end user remain local and are not redistributed by DDO Studio.
+
+SOFTWARE DEPENDENCIES
+
+Three.js and its GLTFLoader, RGBELoader, and OrbitControls runtime modules are staged by the release builder and distributed under their applicable upstream license.
+Microsoft WebView2 Runtime is redistributed using Microsoft's Evergreen Standalone installer subject to Microsoft's applicable license terms.
+VoK.Sdk and other NuGet dependencies remain subject to their respective upstream licenses.
