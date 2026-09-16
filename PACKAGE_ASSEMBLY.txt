@@ -1,0 +1,20 @@
+DDO Studio 1.7.2 Package Assembly
+
+Primary source package contents:
+- src/
+- installer/
+- build-release.cmd
+- build-preview-and-run.cmd
+- build-windows.cmd
+- BUILD_END_USER_INSTALLER.cmd
+- README.md
+- SCENE_STUDIO.md
+- VFX_RENDERING_NOTES.md
+- docs/
+- THIRD_PARTY_NOTICES.txt
+
+No DDO DAT files, environment artwork, runtime caches, user aliases, diagnostic logs, screenshots, or machine-specific paths belong in the source or update package.
+
+The model-name index uses schema v7. Older local indexes are rebuilt automatically.
+
+Release builds remove PDB debug symbols because they can contain local source/build paths.

@@ -1,0 +1,11 @@
+DDO Studio 1.7.2 Final Update Files
+
+1. Close DDO Studio.
+2. Extract this archive.
+3. Copy the contents over the existing DDO Studio 1.7.1 source folder.
+4. Run apply-update-cleanup.cmd once from the source folder.
+5. Run build-preview-and-run.cmd for a development build, or build-release.cmd for the final installer.
+
+The local model index uses schema v7. Standalone weapons and shields remain in normal model search.
+Weapon previews now use Position Y 1.40x / Rotate X 90-degree defaults and prefer looping compatible animation 0x05005943.
+Curated animation labels ship in viewer\animation-names.json; user LocalAppData aliases are not included in the update package.
