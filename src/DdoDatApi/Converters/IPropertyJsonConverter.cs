@@ -42,7 +42,6 @@ public class IPropertyJsonConverter : JsonConverter
             IStringInfoProperty => "StringInfo",
             IStringProperty   => "String",
             IUInt32Property   => "UInt32",
-            IUInt64Property   => "UInt64",
             IVectorProperty   => "Vector",
             IWaveFormProperty => "WaveForm",
             _ => "Unknown",

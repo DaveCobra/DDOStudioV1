@@ -6,6 +6,9 @@ using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using VoK.Sdk.Dat;
+using VoK.Sdk.Exporters;
+using VoK.Sdk.Imaging;
 
 static class R
 {
@@ -80,6 +83,51 @@ sealed class BinBuilder
 }
 
 sealed record JointData(string Name, int Parent, Vector3 Translation, Quaternion Rotation, Vector3 Scale);
+
+/// <summary>
+/// Render state a material declares about itself. Every field is nullable because "the material
+/// never mentioned it" and "the material said false" are different things, and only the first one
+/// should fall back to a default.
+///
+/// These used to be guessed. doubleSided was hardcoded false and alphaMode came from scanning the
+/// decoded texture for a pixel with alpha &lt; 250 - which gets Demise's rune band wrong, because the
+/// band declares AlphaTest with AlphaBlendPass off (a cutout) and the scan called it BLEND. The
+/// material has said so all along; nothing had read it.
+/// </summary>
+sealed class MaterialRenderState
+{
+    public bool? DoubleSided { get; set; }
+    public bool? AlphaTest { get; set; }
+    public float? AlphaTestRef { get; set; }
+    public bool? AlphaBlendPass { get; set; }
+    public bool? DepthWrite { get; set; }
+    public bool? DepthTest { get; set; }
+    public bool? WrapU { get; set; }
+    public bool? WrapV { get; set; }
+
+    /// <summary>
+    /// glTF alpha mode for what the material declared, or null when it declared nothing and the
+    /// caller should keep its own default. AlphaBlendPass means the material is drawn in the
+    /// translucent pass; AlphaTest means a cutout, which glTF spells MASK.
+    /// </summary>
+    public string? GltfAlphaMode =>
+        AlphaBlendPass == true ? "BLEND" :
+        AlphaTest == true ? "MASK" :
+        (AlphaBlendPass.HasValue || AlphaTest.HasValue) ? "OPAQUE" : null;
+
+    public string Describe()
+    {
+        var parts = new List<string>();
+        if (DoubleSided.HasValue) parts.Add($"DoubleSided={DoubleSided}");
+        if (AlphaTest.HasValue) parts.Add($"AlphaTest={AlphaTest}");
+        if (AlphaTestRef.HasValue) parts.Add($"AlphaTestRef={AlphaTestRef:0.###}");
+        if (AlphaBlendPass.HasValue) parts.Add($"AlphaBlendPass={AlphaBlendPass}");
+        if (DepthWrite.HasValue) parts.Add($"DepthWrite={DepthWrite}");
+        if (DepthTest.HasValue) parts.Add($"DepthTest={DepthTest}");
+        if (WrapU.HasValue || WrapV.HasValue) parts.Add($"Wrap={WrapU}/{WrapV}");
+        return parts.Count == 0 ? "(nothing declared)" : string.Join(", ", parts);
+    }
+}
 
 sealed class GltfBuilder
 {
@@ -166,6 +214,17 @@ sealed class GltfBuilder
         {
             foreach (var a in xs)
                 for (int i = 0; i < 4; i++) bw.Write(i < a.Length ? a[i] : 0f);
+        });
+        return AddAccessor(AddBufferView(r.offset, r.length, 34962), 5126, xs.Count, "VEC4");
+    }
+
+    /// <summary>Per-vertex RGBA as COLOR_0.</summary>
+    public int AddColors(IReadOnlyList<float[]> xs)
+    {
+        var r = bin.Add(bw =>
+        {
+            foreach (var c in xs)
+                for (int i = 0; i < 4; i++) bw.Write(i < c.Length ? c[i] : 1f);
         });
         return AddAccessor(AddBufferView(r.offset, r.length, 34962), 5126, xs.Count, "VEC4");
     }
@@ -305,13 +364,24 @@ sealed class GltfBuilder
         => AddPngMaterial(name, png, null, null);
 
     public int AddPngMaterial(string name, byte[]? diffusePng, byte[]? normalPng, IReadOnlyDictionary<string, uint>? ddoTextureIds)
+        => AddPngMaterial(name, diffusePng, normalPng, null, false, ddoTextureIds);
+
+    public int AddPngMaterial(string name, byte[]? diffusePng, byte[]? normalPng, byte[]? emissivePng, bool alphaBlend, IReadOnlyDictionary<string, uint>? ddoTextureIds)
+        => AddPngMaterial(name, diffusePng, normalPng, emissivePng, alphaBlend, false, ddoTextureIds);
+
+    public int AddPngMaterial(string name, byte[]? diffusePng, byte[]? normalPng, byte[]? emissivePng, bool alphaBlend, bool unlitDecal, IReadOnlyDictionary<string, uint>? ddoTextureIds, MaterialRenderState? state = null)
     {
         int diffuseTexture = diffusePng == null ? -1 : AddEmbeddedPngTexture(name + "_Diffuse", diffusePng);
         int normalTexture = normalPng == null ? -1 : AddEmbeddedPngTexture(name + "_Normal", normalPng);
+        int emissiveTexture = emissivePng == null ? -1 : AddEmbeddedPngTexture(name + "_Emissive", emissivePng);
 
+        // An unlit decal keeps the texture's alpha for its shape but contributes no lit colour: scene
+        // lighting must not touch it. Demise's rune band is one - at the studio preset's ~4.4x light its
+        // (252,176,27) clipped straight to flat yellow, losing the whole red-to-yellow gradient, because
+        // the client never lights this material either. Its colour comes from the emissive map instead.
         var pbr = new JsonObject
         {
-            ["baseColorFactor"] = new JsonArray(1.0, 1.0, 1.0, 1.0),
+            ["baseColorFactor"] = unlitDecal ? new JsonArray(0.0, 0.0, 0.0, 1.0) : new JsonArray(1.0, 1.0, 1.0, 1.0),
             ["metallicFactor"] = 0.0,
             ["roughnessFactor"] = 0.8
         };
@@ -321,22 +391,51 @@ sealed class GltfBuilder
         var mat = new JsonObject
         {
             ["name"] = name,
-            ["doubleSided"] = true,
-            // Keep opaque by default. Earlier BLEND output made otherwise-correct DDO
-            // materials look ghosted in Blender and in the embedded viewer.
-            ["alphaMode"] = "OPAQUE",
+            // Both of these come from the material's own DoubleSided / AlphaTest / AlphaBlendPass
+            // properties when it declares them, and only fall back to the old guesses when it does not.
+            //
+            // The fallbacks are what used to run unconditionally. Single-sided matches the client: every
+            // draw in a RenderDoc capture used CullMode = BACK (3), and exporting doubleSided drew the
+            // back faces of thin ribbon geometry - Demise's rune band wraps its blade edge, so its far
+            // side showed just outside the blade's front silhouette and the runes appeared to run off the
+            // model. The alpha fallback scans the decoded texture for real transparency, which is a
+            // guess: it cannot tell a cutout from a blend, and it called Demise's band BLEND when the
+            // material says AlphaTest with AlphaBlendPass off.
+            ["doubleSided"] = state?.DoubleSided ?? false,
+            ["alphaMode"] = state?.GltfAlphaMode ?? (alphaBlend ? "BLEND" : "OPAQUE"),
             ["pbrMetallicRoughness"] = pbr
         };
+        // glTF's default cutoff is 0.5; the material carries its own reference as a waveform, so use its
+        // value at rest rather than the default when it has one.
+        if ((string?)mat["alphaMode"] == "MASK" && state?.AlphaTestRef is float cutoff && cutoff > 0f)
+            mat["alphaCutoff"] = (double)cutoff;
         if (normalTexture >= 0)
             mat["normalTexture"] = new JsonObject { ["index"] = normalTexture, ["scale"] = 1.0 };
+        if (emissiveTexture >= 0)
+        {
+            mat["emissiveTexture"] = new JsonObject { ["index"] = emissiveTexture };
+            mat["emissiveFactor"] = new JsonArray(1.0, 1.0, 1.0);
+        }
 
+        var extras = new JsonObject();
         if (ddoTextureIds != null && ddoTextureIds.Count > 0)
         {
             var ddo = new JsonObject();
             foreach (var kv in ddoTextureIds.OrderBy(k => k.Key, StringComparer.OrdinalIgnoreCase))
                 ddo[kv.Key] = $"0x{kv.Value:X8}";
-            mat["extras"] = new JsonObject { ["ddoTextures"] = ddo };
+            extras["ddoTextures"] = ddo;
         }
+        if (unlitDecal)
+        {
+            // glTF has no additive blend mode, so flag it for the viewer. Measured against an in-game
+            // screenshot: the rune band's brightest pixels are (251,234,114) over metal at (95,92,81).
+            // Alpha-blending the decal predicts (216,178,44) - too dark and too saturated - while adding
+            // it predicts (255,250,107). The client draws these in its effect pass (AlphaBlendPass=1,
+            // DepthWrite=0), which is additive, and that is what makes the runes read as glowing.
+            extras["ddoAdditive"] = true;
+        }
+        if (extras.Count > 0)
+            mat["extras"] = extras;
 
         materials.Add(mat);
         return materials.Count - 1;
@@ -553,15 +652,51 @@ class Program
         return new Uri("http://127.0.0.1:5138/");
     }
 
+    // Still used for animation decoding only: AnimationCatalog/{id}/decode is backend work (Havok), not a
+    // raw dat read. Records and textures no longer go over HTTP.
     static readonly HttpClient Http = new() { BaseAddress = ResolveApiBase() };
     static readonly Assembly Sdk = typeof(VoK.Sdk.Common.RenderMesh).Assembly;
 
-    static async Task<byte[]> Raw(int dat, uint id)
+    /// <summary>DDO install folder, supplied by the desktop app via ConfigureExporterEnvironment.</summary>
+    static string ResolveDatFolder()
     {
-        var url = $"RawDat/{dat}/0x{id:X8}";
-        var r = await Http.GetAsync(url);
-        if (!r.IsSuccessStatusCode) throw new Exception($"{url}: {(int)r.StatusCode} {r.ReasonPhrase}");
-        return await r.Content.ReadAsByteArrayAsync();
+        var path = Environment.GetEnvironmentVariable("DDO_INSTALL_PATH");
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(Path.Combine(path, "client_general.dat")))
+            throw new Exception("DDO_INSTALL_PATH is not set to a folder containing client_general.dat.");
+        return path;
+    }
+
+    static readonly Lazy<string> DatFolder = new(ResolveDatFolder);
+
+    /// <summary>
+    /// RenderMaterial templates by id. A template is shared by every instance that references it and the
+    /// records run to a megabyte, so a Setup with a dozen materials would otherwise re-parse the same
+    /// one repeatedly.
+    /// </summary>
+    static readonly Dictionary<uint, object> TemplateCache = new();
+    static readonly Lazy<IDatFile> GeneralDat = new(() => DatFactory.LoadDatFile(Path.Combine(DatFolder.Value, "client_general.dat")));
+    static readonly Lazy<IDatFile> MeshDat = new(() => DatFactory.LoadDatFile(Path.Combine(DatFolder.Value, "client_mesh.dat")));
+
+    /// <summary>
+    /// Surface lookup, handed to the SDK. It already searches client_surface, client_local_English,
+    /// client_highres and the highres aux packs, which is the whole point: an id's dat is the SDK's
+    /// business, not ours.
+    /// </summary>
+    static readonly Lazy<IImageExporter> Images = new(() => ExporterFactory.GetImageExporter(DatFolder.Value));
+    static readonly Lazy<VoK.Sdk.Properties.IPropertyMaster> PropMaster =
+        new(() => VoK.Sdk.Properties.PropertyMasterFactory.GetPropertyMaster(VoK.Sdk.GameId.DDO, DatFolder.Value));
+
+    /// <summary>
+    /// Reads a record straight out of the dat files. The dat argument keeps the old numbering (13 = mesh,
+    /// everything else general) purely so call sites did not all have to change; it is no longer an index
+    /// into anything.
+    /// </summary>
+    static Task<byte[]> Raw(int dat, uint id)
+    {
+        var file = dat == 13 ? MeshDat.Value : GeneralDat.Value;
+        if (!file.HasFile(id))
+            throw new Exception($"0x{id:X8} is not present in {Path.GetFileName(file.DatFilePath)}");
+        return Task.FromResult(file.GetFileContents(id));
     }
 
     static object ParseSetup(byte[] data)
@@ -738,6 +873,7 @@ class Program
     sealed class MaterialTextureSet
     {
         public Dictionary<string, uint> ByName { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public MaterialRenderState State { get; } = new();
         public uint? FirstTexture { get; set; }
         public uint? Diffuse => Find("DiffuseMap", "BaseColorMap", "ColorMap", "AlbedoMap");
         public uint? Normal => Find("NormalMap", "NormalTexture", "BumpMap");
@@ -750,12 +886,131 @@ class Program
         }
     }
 
+    /// <summary>
+    /// Folds one MaterialModifier's property list into <paramref name="result"/>, last write winning.
+    ///
+    /// Used for the RenderMaterial template's own properties and for every modifier layered on top of
+    /// it, because the client treats them the same way: MaterialProperty::Apply writes a property onto
+    /// the material whether it arrived with the template or with an override.
+    /// </summary>
+    static void ApplyMaterialProperties(object source, MaterialTextureSet result, bool verbose)
+    {
+        int pi = 0;
+        foreach (var prop in R.Items(R.Get(source, "MaterialProperties")))
+        {
+            uint tid = 0;
+            try { tid = R.U(R.Get(prop, "TextureDid")); } catch { }
+            string propertyName = "";
+            try { propertyName = Convert.ToString(R.Get(prop, "MaterialPropertyName")) ?? ""; } catch { }
+            if (verbose)
+                Console.WriteLine($"        property {pi++}: TextureDid=0x{tid:X8}; {ScalarMembers(prop)}");
+
+            if (tid != 0)
+            {
+                result.FirstTexture ??= tid;
+                var textureName = string.IsNullOrWhiteSpace(propertyName) ? $"Texture_{tid:X8}" : propertyName;
+                // APR modifiers intentionally override earlier/base material values.
+                result.ByName[textureName] = tid;
+            }
+
+            bool? boolValue = null;
+            try { if (R.Get(prop, "BoolId") is object b && b != null) boolValue = R.U(b) != 0; } catch { }
+
+            float? waveBase = null;
+            try { if (R.Get(prop, "WaveForm") is object w && w != null) waveBase = Convert.ToSingle(R.Get(w, "Base")); } catch { }
+
+            var state = result.State;
+            switch (propertyName)
+            {
+                case "DoubleSided": state.DoubleSided = boolValue ?? state.DoubleSided; break;
+                case "AlphaTest": state.AlphaTest = boolValue ?? state.AlphaTest; break;
+                case "AlphaBlendPass": state.AlphaBlendPass = boolValue ?? state.AlphaBlendPass; break;
+                case "DepthWrite": state.DepthWrite = boolValue ?? state.DepthWrite; break;
+                case "DepthTest": state.DepthTest = boolValue ?? state.DepthTest; break;
+                case "DiffuseMapWrapU": state.WrapU = boolValue ?? state.WrapU; break;
+                case "DiffuseMapWrapV": state.WrapV = boolValue ?? state.WrapV; break;
+                case "AlphaTestRef": state.AlphaTestRef = waveBase ?? state.AlphaTestRef; break;
+            }
+        }
+    }
+
     static async Task<MaterialTextureSet> ResolveMaterialTextures(uint materialInstanceId, uint meshType, AppearancePlan? appearance)
     {
         var result = new MaterialTextureSet();
         try
         {
             var inst = ParseSdk("VoK.Sdk.Common.MaterialInstance", await Raw(6, materialInstanceId));
+
+            // The RenderMaterial template holds the material's defaults - its textures, its colours and
+            // the render state it declares about itself - and the modifiers below only override what they
+            // mention. Applying the template first is what the client does; skipping it used to lose any
+            // texture no modifier happened to repeat, and left every render-state question to be guessed.
+            uint templateDid = 0;
+            try { templateDid = R.U(R.Get(inst, "RenderMaterialDid")); } catch { }
+            object? template = null;
+            if (templateDid != 0)
+            {
+                try
+                {
+                    template = TemplateCache.TryGetValue(templateDid, out var cached)
+                        ? cached
+                        : TemplateCache[templateDid] = VoK.Sdk.Common.RenderMaterial.Load(GeneralDat.Value, templateDid, PropMaster.Value);
+                }
+                catch (Exception ex) { Console.WriteLine($"    template 0x{templateDid:X8}: {ex.Message}"); }
+            }
+
+            if (template != null)
+            {
+                var templateProps = R.Get(template, "Properties");
+                if (templateProps != null)
+                    ApplyMaterialProperties(templateProps, result, verbose: false);
+            }
+
+            if (Environment.GetEnvironmentVariable("DDO_DUMP_TEMPLATE") == "1")
+            {
+                uint rmDid = templateDid;
+                if (rmDid != 0 && template != null)
+                {
+                    try
+                    {
+                        var rm = template;
+                        var layers = R.Items(R.Get(rm, "Layers")).ToList();
+                        Console.WriteLine($"    TEMPLATE 0x{rmDid:X8}: {layers.Count} layer(s)");
+                        int shaders = 0, dxbc = 0, stages = 0, mods = 0;
+                        foreach (var ly in layers)
+                        {
+                            foreach (var sh in R.Items(R.Get(ly, "Shaders")))
+                            {
+                                foreach (var key in new[] { "Primary", "Secondary", "Tertiary" })
+                                {
+                                    if (R.Get(sh, key) is byte[] buf && buf.Length >= 4)
+                                    {
+                                        shaders++;
+                                        if (buf[0] == (byte)'D' && buf[1] == (byte)'X' && buf[2] == (byte)'B' && buf[3] == (byte)'C') dxbc++;
+                                    }
+                                }
+                            }
+                            stages += R.Items(R.Get(ly, "Stages")).Count();
+                            mods += R.Items(R.Get(ly, "Modifiers")).Count();
+                        }
+                        Console.WriteLine($"      VALIDATE layers={layers.Count} shaderBuffers={shaders} startingWithDXBC={dxbc} stages={stages} modifiers={mods}");
+                        foreach (var prop in R.Items(R.Get(R.Get(rm, "Properties"), "MaterialProperties")))
+                        {
+                            var pname = R.Get(prop, "MaterialPropertyName");
+                            var parts = new List<string>();
+                            foreach (var f in prop.GetType().GetProperties())
+                            {
+                                object? val = null;
+                                try { val = f.GetValue(prop); } catch { }
+                                if (val != null && !(val is System.Collections.IEnumerable && !(val is string)))
+                                    parts.Add($"{f.Name}={val}");
+                            }
+                            Console.WriteLine($"      {pname}: {string.Join(", ", parts)}");
+                        }
+                    }
+                    catch (Exception ex) { Console.WriteLine($"    TEMPLATE 0x{rmDid:X8}: {ex.Message}"); }
+                }
+            }
             uint materialType = R.U(R.Get(inst, "MaterialTypeId"));
             Console.WriteLine($"    material 0x{materialInstanceId:X8}: instance {ScalarMembers(inst)}");
 
@@ -784,23 +1039,7 @@ class Program
                     ? $"      APR priority {queued.priority:0.###} modifier 0x{queued.did:X8}: {ScalarMembers(mod)}"
                     : $"      base modifier 0x{queued.did:X8}: {ScalarMembers(mod)}");
 
-                int pi = 0;
-                foreach (var prop in R.Items(R.Get(mod, "MaterialProperties")))
-                {
-                    uint tid = 0;
-                    try { tid = R.U(R.Get(prop, "TextureDid")); } catch { }
-                    string propertyName = "";
-                    try { propertyName = Convert.ToString(R.Get(prop, "MaterialPropertyName")) ?? ""; } catch { }
-                    Console.WriteLine($"        property {pi++}: TextureDid=0x{tid:X8}; {ScalarMembers(prop)}");
-
-                    if (tid != 0)
-                    {
-                        result.FirstTexture ??= tid;
-                        if (string.IsNullOrWhiteSpace(propertyName)) propertyName = $"Texture_{tid:X8}";
-                        // APR modifiers intentionally override earlier/base material values.
-                        result.ByName[propertyName] = tid;
-                    }
-                }
+                ApplyMaterialProperties(mod, result, verbose: true);
 
                 if (queued.apr)
                     Console.WriteLine($"        applied to meshType=0x{meshType:X8}, materialType=0x{materialType:X8}");
@@ -829,7 +1068,16 @@ class Program
         return result;
     }
 
-    static async Task<(uint surfaceId, byte[] data)?> FetchBestSurface(uint textureId)
+    /// <summary>
+    /// Resolves a RenderTexture to the first of its surfaces the SDK can decode, returning PNG bytes.
+    ///
+    /// This used to read the surface bytes itself, probing dat indices 7 and 6 and accepting only DXT1/3/5.
+    /// That silently failed for anything stored elsewhere: "Demise, the Beginning of the Fall" keeps its
+    /// surfaces in client_surface.dat, every probe threw, and both its materials fell back to the neutral
+    /// placeholder with no texture at all. Sireth only worked because its surface happens to sit in
+    /// client_highres.dat, one of the two that were hardcoded.
+    /// </summary>
+    static async Task<(uint surfaceId, byte[] png, string format)?> FetchBestSurface(uint textureId)
     {
         try
         {
@@ -837,179 +1085,32 @@ class Program
             var surfaces = R.Items(R.Get(tex, "SurfaceDids")).Select(R.U).ToList();
             if (surfaces.Count == 0) return null;
 
-            // DDO RenderTexture surface lists observed so far are highest-res first.
-            // Prefer the first surface whose pixel format we can actually decode; some
-            // textures contain alternate/fallback surfaces in different DATs.
-            (uint surfaceId, byte[] data)? firstReadable = null;
+            // Surface lists are highest-res first, so the first one that decodes is the one we want.
             foreach (uint sid in surfaces)
             {
-                foreach (int dat in new[] { 7, 6 })
+                try
                 {
-                    try
-                    {
-                        var data = await Raw(dat, sid);
-                        firstReadable ??= (sid, data);
-                        try
-                        {
-                            var meta = ParseSurface(data);
-                            Console.WriteLine($"    texture 0x{textureId:X8}: candidate surface 0x{sid:X8} dat={dat} {meta.width}x{meta.height} {meta.fourcc}");
-                            if (meta.fourcc is "DXT1" or "DXT3" or "DXT5")
-                                return (sid, data);
-                        }
-                        catch (Exception ex)
-                        {
-                            Console.WriteLine($"    texture 0x{textureId:X8}: surface 0x{sid:X8} header parse failed ({ex.Message})");
-                        }
-                    }
+                    var png = Images.Value.GetPngImageBytes(sid);
+                    if (png == null || png.Length == 0) continue;
+
+                    var format = "?";
+                    try { Images.Value.GetImage(sid, out _, out var f); format = f.ToString(); }
                     catch { }
+
+                    Console.WriteLine($"    texture 0x{textureId:X8}: surface 0x{sid:X8} decoded as {format}");
+                    return (sid, png, format);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"    texture 0x{textureId:X8}: surface 0x{sid:X8} not decodable ({ex.Message})");
                 }
             }
-            return firstReadable;
         }
         catch (Exception ex)
         {
             Console.WriteLine($"    texture 0x{textureId:X8}: surface lookup failed ({ex.Message})");
         }
         return null;
-    }
-
-    static (int width, int height, string fourcc, byte[] payload) ParseSurface(byte[] data)
-    {
-        if (data.Length < 24) throw new Exception("RenderSurface header is truncated.");
-        int width = checked((int)BitConverter.ToUInt32(data, 8));
-        int height = checked((int)BitConverter.ToUInt32(data, 12));
-        string fourcc = Encoding.ASCII.GetString(data, 16, 4);
-        int size = checked((int)BitConverter.ToUInt32(data, 20));
-        if (width <= 0 || height <= 0 || size < 0 || 24L + size > data.Length)
-            throw new Exception("Invalid RenderSurface dimensions/payload.");
-        return (width, height, fourcc, data.AsSpan(24, size).ToArray());
-    }
-
-    static void Color565(ushort c, out byte r, out byte g, out byte b)
-    {
-        int rr = (c >> 11) & 31, gg = (c >> 5) & 63, bb = c & 31;
-        r = (byte)((rr * 255 + 15) / 31);
-        g = (byte)((gg * 255 + 31) / 63);
-        b = (byte)((bb * 255 + 15) / 31);
-    }
-
-    static void DecodeColorBlock(ReadOnlySpan<byte> src, Span<byte> rgba, int width, int height, int bx, int by, ReadOnlySpan<byte> alpha)
-    {
-        ushort c0 = (ushort)(src[0] | (src[1] << 8));
-        ushort c1 = (ushort)(src[2] | (src[3] << 8));
-        Color565(c0, out byte r0, out byte g0, out byte b0);
-        Color565(c1, out byte r1, out byte g1, out byte b1);
-
-        Span<byte> pal = stackalloc byte[16];
-        pal[0]=r0; pal[1]=g0; pal[2]=b0; pal[3]=255;
-        pal[4]=r1; pal[5]=g1; pal[6]=b1; pal[7]=255;
-        pal[8]=(byte)((2*r0+r1)/3); pal[9]=(byte)((2*g0+g1)/3); pal[10]=(byte)((2*b0+b1)/3); pal[11]=255;
-        pal[12]=(byte)((r0+2*r1)/3); pal[13]=(byte)((g0+2*g1)/3); pal[14]=(byte)((b0+2*b1)/3); pal[15]=255;
-
-        uint bits = BitConverter.ToUInt32(src.Slice(4,4));
-        for (int py=0; py<4; py++)
-        for (int px=0; px<4; px++)
-        {
-            int x=bx*4+px, y=by*4+py, p=py*4+px;
-            if (x>=width || y>=height) continue;
-            int ci=(int)((bits >> (2*p)) & 3);
-            int d=(y*width+x)*4, s=ci*4;
-            rgba[d]=pal[s]; rgba[d+1]=pal[s+1]; rgba[d+2]=pal[s+2]; rgba[d+3]=alpha[p];
-        }
-    }
-
-    static byte[] DecodeBc1(int width, int height, byte[] src)
-    {
-        byte[] rgba = new byte[width * height * 4];
-        int blocksX = (width + 3) / 4, blocksY = (height + 3) / 4, o = 0;
-
-        for (int by = 0; by < blocksY; by++)
-        for (int bx = 0; bx < blocksX; bx++)
-        {
-            if (o + 8 > src.Length) throw new Exception("DXT1 payload truncated.");
-
-            ushort c0 = (ushort)(src[o] | (src[o + 1] << 8));
-            ushort c1 = (ushort)(src[o + 2] | (src[o + 3] << 8));
-            Color565(c0, out byte r0, out byte g0, out byte b0);
-            Color565(c1, out byte r1, out byte g1, out byte b1);
-
-            Span<byte> pal = stackalloc byte[16];
-            pal[0] = r0; pal[1] = g0; pal[2] = b0; pal[3] = 255;
-            pal[4] = r1; pal[5] = g1; pal[6] = b1; pal[7] = 255;
-            if (c0 > c1)
-            {
-                pal[8] = (byte)((2 * r0 + r1) / 3); pal[9] = (byte)((2 * g0 + g1) / 3); pal[10] = (byte)((2 * b0 + b1) / 3); pal[11] = 255;
-                pal[12] = (byte)((r0 + 2 * r1) / 3); pal[13] = (byte)((g0 + 2 * g1) / 3); pal[14] = (byte)((b0 + 2 * b1) / 3); pal[15] = 255;
-            }
-            else
-            {
-                pal[8] = (byte)((r0 + r1) / 2); pal[9] = (byte)((g0 + g1) / 2); pal[10] = (byte)((b0 + b1) / 2); pal[11] = 255;
-                pal[12] = 0; pal[13] = 0; pal[14] = 0; pal[15] = 0;
-            }
-
-            uint bits = BitConverter.ToUInt32(src, o + 4);
-            for (int py = 0; py < 4; py++)
-            for (int px = 0; px < 4; px++)
-            {
-                int x = bx * 4 + px, y = by * 4 + py, q = py * 4 + px;
-                if (x >= width || y >= height) continue;
-                int ci = (int)((bits >> (2 * q)) & 3);
-                int d = (y * width + x) * 4, sp = ci * 4;
-                rgba[d] = pal[sp]; rgba[d + 1] = pal[sp + 1]; rgba[d + 2] = pal[sp + 2]; rgba[d + 3] = pal[sp + 3];
-            }
-            o += 8;
-        }
-        return rgba;
-    }
-
-    static byte[] DecodeBc2(int width, int height, byte[] src)
-    {
-        byte[] rgba = new byte[width*height*4];
-        int blocksX=(width+3)/4, blocksY=(height+3)/4, o=0;
-        Span<byte> alpha = stackalloc byte[16];
-        for (int by=0; by<blocksY; by++)
-        for (int bx=0; bx<blocksX; bx++)
-        {
-            if (o+16>src.Length) throw new Exception("DXT3 payload truncated.");
-            ulong abits = BitConverter.ToUInt64(src, o);
-            for(int i=0;i<16;i++) alpha[i]=(byte)(((abits>>(4*i))&0xF)*17);
-            DecodeColorBlock(src.AsSpan(o+8,8), rgba, width,height,bx,by,alpha);
-            o+=16;
-        }
-        return rgba;
-    }
-
-    static byte[] DecodeBc3(int width, int height, byte[] src)
-    {
-        byte[] rgba = new byte[width*height*4];
-        int blocksX=(width+3)/4, blocksY=(height+3)/4, o=0;
-        Span<byte> alpha = stackalloc byte[16];
-        Span<byte> ap = stackalloc byte[8];
-        for (int by=0; by<blocksY; by++)
-        for (int bx=0; bx<blocksX; bx++)
-        {
-            if (o+16>src.Length) throw new Exception("DXT5 payload truncated.");
-            byte a0=src[o], a1=src[o+1];
-            ap[0]=a0; ap[1]=a1;
-            if(a0>a1)
-            {
-                ap[2]=(byte)((6*a0+1*a1)/7); ap[3]=(byte)((5*a0+2*a1)/7);
-                ap[4]=(byte)((4*a0+3*a1)/7); ap[5]=(byte)((3*a0+4*a1)/7);
-                ap[6]=(byte)((2*a0+5*a1)/7); ap[7]=(byte)((1*a0+6*a1)/7);
-            }
-            else
-            {
-                ap[2]=(byte)((4*a0+1*a1)/5); ap[3]=(byte)((3*a0+2*a1)/5);
-                ap[4]=(byte)((2*a0+3*a1)/5); ap[5]=(byte)((1*a0+4*a1)/5);
-                ap[6]=0; ap[7]=255;
-            }
-            ulong idx=0;
-            for(int i=0;i<6;i++) idx |= ((ulong)src[o+2+i]) << (8*i);
-            for(int i=0;i<16;i++) alpha[i]=ap[(int)((idx>>(3*i))&7)];
-            DecodeColorBlock(src.AsSpan(o+8,8), rgba, width,height,bx,by,alpha);
-            o+=16;
-        }
-        return rgba;
     }
 
     static uint[] CrcTable = BuildCrcTable();
@@ -1076,15 +1177,171 @@ class Program
     {
         var surf = await FetchBestSurface(textureId);
         if (!surf.HasValue) return null;
-        var p = ParseSurface(surf.Value.data);
-        byte[] rgba = p.fourcc switch
+        var (w, h) = PngSize(surf.Value.png);
+        return (surf.Value.png, surf.Value.surfaceId, w, h, surf.Value.format);
+    }
+
+    static uint? LookupTexture(IReadOnlyDictionary<string, uint>? byName, string key)
+    {
+        if (byName == null) return null;
+        foreach (var kv in byName)
+            if (kv.Key.Equals(key, StringComparison.OrdinalIgnoreCase) && kv.Value != 0) return kv.Value;
+        return null;
+    }
+
+    /// <summary>
+    /// RGBA pixels for a texture's best surface.
+    ///
+    /// Comes straight from the SDK's GetRgbaPixels: plain top-down RGBA at the true dimensions, no file
+    /// container to unwrap and no block decoder to maintain here. The exporter used to carry its own BC1/2/3
+    /// decoders because the SDK's DxtToDds wrote the DDS dwHeight and dwWidth fields transposed, which
+    /// scrambled every non-square texture; that is fixed in the SDK with regression tests, so the local
+    /// decoders are gone - one of them (DXT3) was quietly returning a single flat colour.
+    ///
+    /// Note GetRgbaImageBytes is still not what it sounds like: despite the name it returns BMP *file*
+    /// bytes. GetRgbaPixels is the one that returns pixels.
+    /// </summary>
+    static async Task<(byte[] rgba, int width, int height, uint surfaceId)?> LoadTextureRgba(uint textureId)
+    {
+        var surf = await FetchBestSurface(textureId);
+        if (!surf.HasValue) return null;
+
+        // Pixels come from the SDK: GetRgbaPixels returns plain top-down RGBA at the correct
+        // dimensions, so there is no container to unwrap and no decoder to maintain here.
+        var px = Images.Value.GetRgbaPixels(surf.Value.surfaceId);
+        if (px?.Pixels == null || px.Width <= 0 || px.Height <= 0)
         {
-            "DXT1" => DecodeBc1(p.width, p.height, p.payload),
-            "DXT3" => DecodeBc2(p.width, p.height, p.payload),
-            "DXT5" => DecodeBc3(p.width, p.height, p.payload),
-            _ => throw new Exception($"Unsupported surface format {p.fourcc}")
-        };
-        return (EncodePng(p.width, p.height, rgba), surf.Value.surfaceId, p.width, p.height, p.fourcc);
+            Console.WriteLine($"    texture 0x{textureId:X8}: surface 0x{surf.Value.surfaceId:X8} produced no RGBA pixels");
+            return null;
+        }
+        return (px.Pixels, px.Width, px.Height, surf.Value.surfaceId);
+    }
+
+    /// <summary>
+    /// Flattens a two-layer DDO material into the single base-colour texture glTF allows.
+    ///
+    /// Materials like Demise's blade bands carry DiffuseMap plus DiffuseMap2, and the shader
+    /// (Texture_ColorAndOpacity / Texture_ColorAndOpacity2) multiplies them - the alphas included, which is
+    /// where the shape lives. The band's DiffuseMap is white RGB with a rune-shaped alpha and DiffuseMap2
+    /// supplies the orange, so exporting layer 1 alone gives the solid white strip these used to render as.
+    ///
+    /// Layer 2 is sampled nearest-neighbour into layer 1's dimensions; they are rarely the same size
+    /// (1024x64 against 256x16 here). UTranslate/UTranslate2 scroll the layers in game, so baking freezes
+    /// them at t=0 - static runes rather than moving ones, which needs viewer-side animation to fix
+    /// properly, the way the weapon aura is handled.
+    /// </summary>
+    static double StdDev(double[] values)
+    {
+        double mean = 0;
+        foreach (var v in values) mean += v;
+        mean /= values.Length;
+        double acc = 0;
+        foreach (var v in values) acc += (v - mean) * (v - mean);
+        return Math.Sqrt(acc / values.Length);
+    }
+
+    /// <summary>Length of the repeating run in a 1-D colour ramp, comparing averaged samples.</summary>
+    static int RampPeriod(double[] values)
+    {
+        int n = values.Length;
+        for (int p = 1; p < n; p++)
+        {
+            if (n % p != 0) continue;
+            bool ok = true;
+            for (int i = p; i < n && ok; i++)
+                if (Math.Abs(values[i] - values[i % p]) > 16) ok = false;
+            if (ok) return p;
+        }
+        return n;
+    }
+
+    static double[] AxisMeans(byte[] rgba, int w, int h, bool alongU)
+    {
+        var means = new double[alongU ? w : h];
+        int other = alongU ? h : w;
+        for (int i = 0; i < means.Length; i++)
+        {
+            double sum = 0;
+            for (int j = 0; j < other; j++)
+            {
+                int x = alongU ? i : j, y = alongU ? j : i;
+                sum += rgba[(y * w + x) * 4 + 1];   // green separates this ramp's red from its yellow
+            }
+            means[i] = sum / other;
+        }
+        return means;
+    }
+
+
+    static byte[] CombineLayers(byte[] a, int aw, int ah, byte[] b, int bw, int bh, float rampPhase = 0f, float[][]? vertexColorByU = null)
+    {
+        // Layer 2 is a colour ramp and it runs ALONG the band, not across it: measured off an in-game
+        // screenshot, green along the band reads [113,163,189,155,119] end-to-end - red at both ends,
+        // yellow in the middle - while across it only the border lines vary. A plain 1:1 sample sweeps the
+        // ramp once over the band's length, which is exactly that. An earlier build mapped it across the
+        // width instead; the direction was never the problem, only the ramp being tiled and mis-phased,
+        // which the DXT transpose fix in the SDK resolved.
+        var outRgba = new byte[aw * ah * 4];
+        for (int y = 0; y < ah; y++)
+        {
+            int by = bh == ah ? y : (int)((long)y * bh / ah);
+            for (int x = 0; x < aw; x++)
+            {
+                // Sample the ramp at this pixel's offset from the band's UV start, wrapped.
+                double u = x / (double)aw - rampPhase;
+                u -= Math.Floor(u);
+                int bx = (int)(u * bw);
+                int ai = (y * aw + x) * 4;
+                int bi = (Math.Min(by, bh - 1) * bw + Math.Min(bx, bw - 1)) * 4;
+                for (int c = 0; c < 4; c++)
+                    outRgba[ai + c] = (byte)(a[ai + c] * b[bi + c] / 255);
+
+                // The client multiplies the vertex colour in as well, not just its alpha. The alpha is
+                // what fades these bands out at the blade tips (o0.w = tex0.a * tex1.a * v3.w), and the
+                // RGB narrows the gradient: its green runs 0.32,0.25,0.32,0.41,0.59,0.50,0.39,0.31 along
+                // the band - a much tighter yellow peak than the texture ramp's, which on its own leaves
+                // the band too yellow and loses the red the game keeps over most of its length.
+                if (vertexColorByU != null)
+                {
+                    int bin = Math.Clamp((int)((x / (double)aw) * vertexColorByU.Length), 0, vertexColorByU.Length - 1);
+                    // Straight out of the client's own shader for this material (RenderMaterial
+                    // 0x2B00036A):
+                    //
+                    //   alpha  = tex0.a * tex1.a * v3.w        (v3.w is the vertex alpha, applied raw)
+                    //   colour = 2 * tex0.rgb * tex1.rgb * v3.rgb * <lighting>
+                    //
+                    // The x2 is the same MODULATE2X the mesh shaders use, and it is where the brightness
+                    // comes from - not from an alpha gain, which was an earlier guess that scaled the
+                    // whole decal instead of its colour. Multiplying the vertex RGB first keeps the x2
+                    // from clipping: green peaks at 194*0.59 = 114, so doubling lands at 229 rather than
+                    // saturating, which is what brings the yellow back.
+                    var vc = vertexColorByU[bin];
+                    for (int c = 0; c < 3; c++)
+                        outRgba[ai + c] = (byte)Math.Min(255, outRgba[ai + c] * Math.Clamp(vc[c], 0f, 1f) * 2f);
+                    outRgba[ai + 3] = (byte)(outRgba[ai + 3] * Math.Clamp(vc[3], 0f, 1f));
+                }
+
+
+            }
+        }
+        return outRgba;
+    }
+
+    /// <summary>True when a texture carries real transparency, so the material needs alphaMode BLEND.</summary>
+    static bool HasTransparency(byte[] rgba)
+    {
+        for (int i = 3; i < rgba.Length; i += 4)
+            if (rgba[i] < 250) return true;
+        return false;
+    }
+
+    /// <summary>Width/height straight from the PNG IHDR, for logging only.</summary>
+    static (int width, int height) PngSize(byte[] png)
+    {
+        if (png.Length < 24) return (0, 0);
+        int w = (png[16] << 24) | (png[17] << 16) | (png[18] << 8) | png[19];
+        int h = (png[20] << 24) | (png[21] << 16) | (png[22] << 8) | png[23];
+        return (w, h);
     }
 
     static JsonArray Arr(params float[] xs) => new(xs.Select(x => (JsonNode?)x).ToArray());
@@ -1270,7 +1527,8 @@ class Program
         AppearancePlan? appearance = AppearancePlan.Load(appearancePath);
         Console.WriteLine($"DDO GLB Exporter 1.7.2 appearance-composition build - Setup 0x{setupId:X8}");
         if (appearanceOnly) Console.WriteLine("Standalone wearable mode: export APR replacement geometry without the generic base Setup meshes.");
-        Console.WriteLine($"Backend API: {Http.BaseAddress}");
+        Console.WriteLine($"Dat folder: {DatFolder.Value}");
+        Console.WriteLine($"Backend API (animations only): {Http.BaseAddress}");
         if (appearance != null)
         {
             Console.WriteLine($"Appearance composition: {appearance.SourcePath}");
@@ -1398,6 +1656,8 @@ class Program
                 var uv = new List<Vector2>(verts.Count);
                 var js = new List<ushort[]>(verts.Count);
                 var ws = new List<float[]>(verts.Count);
+                var vcol = new List<float[]>(verts.Count);
+                bool anyVertexColor = false;
 
                 // 1.4.1 Raw-V texture-wrap tests: DDO assets can carry multiple texture-coordinate entries per vertex.
                 // Record the complete channel structure before exporting channel 0 so we can determine
@@ -1421,6 +1681,36 @@ class Program
 
                     var no = R.Get(v, "Normal");
                     nrm.Add(no != null ? Vector3.Normalize(R.V3(no)) : Vector3.UnitZ);
+
+                    if (Environment.GetEnvironmentVariable("DDO_DUMP_VCOL") == "1" && vertexNumber < 6)
+                    {
+                        var dif = R.Get(v, "Diffuse");
+                        var uv0 = R.Items(R.Get(v, "UVMap")).FirstOrDefault();
+                        Console.WriteLine($"    VCOL set={si} v{vertexNumber}: Diffuse={(dif == null ? "null" : dif.ToString())} u={(uv0 == null ? 0 : R.F(R.Get(uv0, "U")))}");
+                    }
+                    // DDO stores a packed 32-bit vertex colour, but the SDK surfaces it as float? - so the
+                    // bits have to be read back as an integer. Demise's rune band uses it as an alpha
+                    // ramp: opaque through the middle (0xFF......, which reads as NaN) fading to nearly
+                    // clear at the tips (0x01......, which reads as a denormal near 2.3e-38). Dropping it
+                    // is why the band ran at full strength right off the ends of the blade.
+                    var difRaw = R.Get(v, "Diffuse");
+                    if (difRaw != null)
+                    {
+                        uint packed = BitConverter.SingleToUInt32Bits(Convert.ToSingle(difRaw));
+                        if (packed != 0)
+                        {
+                            vcol.Add(new[]
+                            {
+                                ((packed >> 16) & 0xFF) / 255f,   // R
+                                ((packed >> 8) & 0xFF) / 255f,    // G
+                                (packed & 0xFF) / 255f,           // B
+                                ((packed >> 24) & 0xFF) / 255f    // A
+                            });
+                            anyVertexColor = true;
+                        }
+                        else vcol.Add(new[] { 1f, 1f, 1f, 1f });
+                    }
+                    else vcol.Add(new[] { 1f, 1f, 1f, 1f });
 
                     var uvs = R.Items(R.Get(v, "UVMap")).ToList();
                     for (int ch = 0; ch < uvs.Count; ch++)
@@ -1493,7 +1783,73 @@ class Program
 
                 int pAcc = gltf.AddPositions(pos);
                 int nAcc = gltf.AddNormals(nrm);
+                // Vertex alpha as a function of U, so it can be baked into the composited texture.
+                // three r128 declares `varying vec3 vColor` and drops the alpha channel of COLOR_0, so
+                // exporting it is not enough - but the band's U maps straight onto the texture's U, which
+                // makes the fade expressible as a 1-D curve over U.
+                float[][]? vertexColorByU = null;
+                if (anyVertexColor && uv.Count == vcol.Count && uv.Count > 0)
+                {
+                    const int bins = 256;
+                    var sum = new double[bins, 4];
+                    var hits = new int[bins];
+                    for (int i = 0; i < uv.Count; i++)
+                    {
+                        double uu = uv[i].X - Math.Floor(uv[i].X);
+                        int bin = Math.Clamp((int)(uu * bins), 0, bins - 1);
+                        for (int c = 0; c < 4; c++) sum[bin, c] += vcol[i][c];
+                        hits[bin]++;
+                    }
+                    var table = new float[bins][];
+                    for (int i = 0; i < bins; i++)
+                        table[i] = hits[i] > 0
+                            ? new[] { (float)(sum[i, 0] / hits[i]), (float)(sum[i, 1] / hits[i]), (float)(sum[i, 2] / hits[i]), (float)(sum[i, 3] / hits[i]) }
+                            : null;
+                    // Interpolate across empty bins rather than copying the nearest neighbour. There are
+                    // only 176 vertices spread over 256 bins, so most are empty, and nearest-neighbour
+                    // fill smears a tip vertex's near-zero alpha across a wide stretch of U - the band
+                    // then fades out far sooner than in game. The client interpolates vertex attributes
+                    // linearly across each triangle, so do the same here.
+                    var populated = new List<int>();
+                    for (int i = 0; i < bins; i++) if (table[i] != null) populated.Add(i);
+                    if (populated.Count == 0)
+                    {
+                        for (int i = 0; i < bins; i++) table[i] = new[] { 1f, 1f, 1f, 1f };
+                    }
+                    else
+                    {
+                        for (int i = 0; i < bins; i++)
+                        {
+                            if (table[i] != null) continue;
+                            int prev = -1, next = -1;
+                            for (int d = 1; d <= bins; d++)
+                            {
+                                int a = (i - d + bins) % bins;
+                                if (prev < 0 && table[a] != null) prev = a;
+                                int b = (i + d) % bins;
+                                if (next < 0 && table[b] != null) next = b;
+                                if (prev >= 0 && next >= 0) break;
+                            }
+                            int gapPrev = (i - prev + bins) % bins;
+                            int gapNext = (next - i + bins) % bins;
+                            float t = gapPrev + gapNext == 0 ? 0f : gapPrev / (float)(gapPrev + gapNext);
+                            var lo = table[prev]; var hi = table[next];
+                            table[i] = new[]
+                            {
+                                lo[0] + (hi[0] - lo[0]) * t,
+                                lo[1] + (hi[1] - lo[1]) * t,
+                                lo[2] + (hi[2] - lo[2]) * t,
+                                lo[3] + (hi[3] - lo[3]) * t
+                            };
+                        }
+                    }
+                    vertexColorByU = table;
+                }
+
                 int uAcc = gltf.AddUVs(uv);
+                int cAcc = anyVertexColor ? gltf.AddColors(vcol) : -1;
+                if (anyVertexColor)
+                    Console.WriteLine($"  set {si}: per-vertex colour present, exported as COLOR_0");
                 int jAcc = rigged ? gltf.AddJoints(js) : -1;
                 int wAcc = rigged ? gltf.AddWeights(ws) : -1;
                 int iAcc = gltf.AddIndices(idx);
@@ -1525,13 +1881,87 @@ class Program
                                 catch (Exception ex) { Console.WriteLine($"  material 0x{mid:X8}: NormalMap decode failed ({ex.Message})"); }
                             }
 
-                            if (diffuse.HasValue || normal.HasValue)
+                            // Second diffuse layer, emissive/glow, and whether this material is actually
+                            // transparent - none of which used to reach the GLB.
+                            byte[]? diffusePng = diffuse.HasValue ? diffuse.Value.png : null;
+                            byte[]? emissivePng = null;
+                            bool alphaBlend = false;
+                            bool unlitDecal = false;
+
+                            uint? diffuse2Id = LookupTexture(textureSet.ByName, "DiffuseMap2");
+                            if (diffuse2Id.HasValue && diffuseId.HasValue)
+                            {
+                                try
+                                {
+                                    var l1 = await LoadTextureRgba(diffuseId.Value);
+                                    var l2 = await LoadTextureRgba(diffuse2Id.Value);
+                                    if (l1.HasValue && l2.HasValue)
+                                    {
+                                        // Phase the ramp to the band's real UV start. These UVs do not
+                                        // begin at 0 - Demise's band runs U 0.362..1.366, wrapping once -
+                                        // so a plain sweep puts the ramp's red end wherever the band
+                                        // crosses U=1, about a third of the way along, instead of at its
+                                        // tip. Right gradient, wrong place.
+                                        float rampPhase = uvStats.Count > 0 && float.IsFinite(uvStats[0].minU)
+                                            ? uvStats[0].minU
+                                            : 0f;
+                                        var merged = CombineLayers(l1.Value.rgba, l1.Value.width, l1.Value.height,
+                                                                   l2.Value.rgba, l2.Value.width, l2.Value.height,
+                                                                   rampPhase, vertexColorByU);
+                                        diffusePng = EncodePng(l1.Value.width, l1.Value.height, merged);
+                                        alphaBlend = HasTransparency(merged);
+                                        // Self-illuminate a composited decal layer. These bands read as
+                                        // glowing runes in game, not as lit metal - the material sits in
+                                        // the alpha-blend pass (AlphaBlendPass=1, DepthWrite=0) and owes
+                                        // its brightness to the effect pass rather than to scene lighting,
+                                        // so without emissive it renders as a dull painted-on stripe.
+                                        emissivePng = diffusePng;
+                                        unlitDecal = true;
+                                        Console.WriteLine($"  material 0x{mid:X8}: DiffuseMap2 0x{diffuse2Id.Value:X8} composited into baseColorTexture ({l1.Value.width}x{l1.Value.height} x {l2.Value.width}x{l2.Value.height}){(alphaBlend ? ", alphaMode BLEND" : "")}");
+                                    }
+                                }
+                                catch (Exception ex) { Console.WriteLine($"  material 0x{mid:X8}: DiffuseMap2 composite failed ({ex.Message})"); }
+                            }
+                            else if (diffuse.HasValue)
+                            {
+                                try
+                                {
+                                    var l1 = await LoadTextureRgba(diffuseId!.Value);
+                                    if (l1.HasValue && HasTransparency(l1.Value.rgba))
+                                    {
+                                        alphaBlend = true;
+                                        Console.WriteLine($"  material 0x{mid:X8}: diffuse carries alpha, alphaMode BLEND");
+                                    }
+                                }
+                                catch { }
+                            }
+
+                            uint? glowId = LookupTexture(textureSet.ByName, "EmissiveMap") ?? LookupTexture(textureSet.ByName, "GlowMap");
+                            if (glowId.HasValue)
+                            {
+                                try
+                                {
+                                    var glow = await LoadTexturePng(glowId.Value);
+                                    if (glow.HasValue)
+                                    {
+                                        emissivePng = glow.Value.png;
+                                        Console.WriteLine($"  material 0x{mid:X8}: EmissiveMap/GlowMap 0x{glowId.Value:X8} surface 0x{glow.Value.surfaceId:X8} -> GLB emissiveTexture");
+                                    }
+                                }
+                                catch (Exception ex) { Console.WriteLine($"  material 0x{mid:X8}: glow decode failed ({ex.Message})"); }
+                            }
+
+                            if (diffuse.HasValue || normal.HasValue || emissivePng != null)
                             {
                                 materialIndex = gltf.AddPngMaterial(
                                     $"Material_{mid:X8}",
-                                    diffuse.HasValue ? diffuse.Value.png : null,
+                                    diffusePng,
                                     normal.HasValue ? normal.Value.png : null,
-                                    textureSet.ByName);
+                                    emissivePng,
+                                    alphaBlend,
+                                    unlitDecal,
+                                    textureSet.ByName,
+                                    textureSet.State);
 
                                 if (diffuse.HasValue)
                                     Console.WriteLine($"  material 0x{mid:X8}: DiffuseMap surface 0x{diffuse.Value.surfaceId:X8} {diffuse.Value.width}x{diffuse.Value.height} {diffuse.Value.fourcc} -> GLB baseColorTexture");
@@ -1565,6 +1995,7 @@ class Program
                     ["NORMAL"] = nAcc,
                     ["TEXCOORD_0"] = uAcc
                 };
+                if (cAcc >= 0) attrs["COLOR_0"] = cAcc;
                 if (rigged)
                 {
                     attrs["JOINTS_0"] = jAcc;
