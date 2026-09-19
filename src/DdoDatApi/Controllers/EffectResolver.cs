@@ -259,9 +259,13 @@ internal static class EffectResolver
         if (prop.IsLiteral) {
             raw = prop.GetText(DatSource.PropertyMaster, null, null);
         } else {
-            // GetStringEntry gives the raw string with {0}, {1}, … still intact.
-            // GetText(…, null, null) would drop unfilled placeholders, so prefer GetStringEntry.
-            var entry = prop.GetStringEntry(DatSource.PropertyMaster);
+            // The string table entry gives the raw string with {0}, {1}, … still intact.
+            // GetText(…, null, null) would drop unfilled placeholders, so prefer the entry.
+            // VoK.Sdk 5.0 removed IStringInfoProperty.GetStringEntry; look the entry up through the
+            // property master with the StringInfo's own key/table instead.
+            var entry = prop.Key != null && prop.Table != null
+                ? DatSource.PropertyMaster.GetStringEntry(prop.Key.Value, prop.Table.Value)
+                : null;
             raw = entry?.Value ?? prop.GetText(DatSource.PropertyMaster, null, null);
         }
 

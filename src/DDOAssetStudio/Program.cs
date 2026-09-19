@@ -1,4 +1,5 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Win32;
@@ -2534,8 +2535,8 @@ public sealed class MainForm : Form
         bool directVisualSetup = IsStandaloneWearable(row) && await HasDirectVisualSetupAsync(row);
         bool appearanceOnly = appearanceComposition != null && IsStandaloneWearable(row) && !directVisualSetup;
         var previewFile = Path.Combine(previewCache, appearanceComposition != null
-            ? $"composed_{row.DbId:X8}_setup_{row.Setup:X8}{dressKey}_v172.glb"
-            : $"setup_{row.Setup:X8}{dressKey}_v172.glb");
+            ? $"composed_{row.DbId:X8}_setup_{row.Setup:X8}{dressKey}_v186.glb"
+            : $"setup_{row.Setup:X8}{dressKey}_v186.glb");
         try
         {
             previewStatus.Text = File.Exists(previewFile) ? $"3D preview: loading cached {effectiveLabel}…" : $"3D preview: building {effectiveLabel}…";
@@ -2684,6 +2685,151 @@ public sealed class MainForm : Form
     // 1.7.2 bakes APR appearance operations into the primary GLB before it reaches
     // the viewer. The older separate-NPC-layer overlay path was removed deliberately.
 
+    sealed record ResolvedWeaponEffectPayload(string Payload, string Summary);
+
+    /// <summary>
+    /// Asks the backend for the weapon's resolved imbue effects, then makes them loadable by the
+    /// WebView: particle sheets and the aura texture are cached as PNGs and the aura shell mesh is
+    /// exported to GLB, all under the same virtual host the preview model uses. Returns null when the
+    /// asset has no resolved effects, which is the normal answer for anything unimbued.
+    /// </summary>
+    async Task<ResolvedWeaponEffectPayload?> ResolveWeaponEffectsPayloadAsync(AssetRow row, int generation)
+    {
+        if (row.DbId == 0) return null;
+
+        try
+        {
+            using var response = await http.GetAsync($"WeaponEffect/resolve?db=0x{row.DbId:X8}");
+            if (!response.IsSuccessStatusCode || generation != previewGeneration) return null;
+
+            if (JsonNode.Parse(await response.Content.ReadAsStringAsync()) is not JsonObject root) return null;
+
+            var spawns = root["spawns"] as JsonArray;
+            var shell = root["shell"] as JsonObject;
+            if ((spawns == null || spawns.Count == 0) && shell == null) return null;
+
+            if (root["particleSystems"] is JsonObject systems)
+            {
+                foreach (var entry in systems)
+                {
+                    if (entry.Value is JsonObject system && system["textureUrl"]?.GetValue<string>() is string texture)
+                        system["textureUrl"] = await CacheEffectImageAsync(texture);
+                }
+            }
+
+            string shellNote = "";
+            if (shell != null)
+            {
+                // The aura material blends two independently animated texture layers.
+                foreach (var layer in (shell["layers"] as JsonArray) ?? new JsonArray())
+                {
+                    if (layer is JsonObject layerObject && layerObject["textureUrl"]?.GetValue<string>() is string auraTexture)
+                        layerObject["textureUrl"] = await CacheEffectImageAsync(auraTexture);
+                }
+
+                if (shell["setupId"]?.GetValue<string>() is string setupId)
+                {
+                    var glb = await ExportEffectSetupAsync(setupId, generation);
+                    shell["glbUrl"] = glb;
+                    if (glb == null) shellNote = " (aura mesh export failed)";
+                }
+            }
+
+            if (generation != previewGeneration) return null;
+
+            var anchors = spawns == null
+                ? Array.Empty<string>()
+                : spawns.Select(x => (x as JsonObject)?["anchor"]?.GetValue<string>() ?? "?").ToArray();
+            var particleIds = spawns == null
+                ? Array.Empty<string>()
+                : spawns.Select(x => (x as JsonObject)?["particleSystem"]?.GetValue<string>() ?? "?").Distinct().ToArray();
+
+            var summary = new StringBuilder();
+            summary.Append("\r\n\r\nVISUAL EFFECTS\r\n");
+            summary.Append($"   Imbue: {root["imbueType"]?.GetValue<string>()} / {root["imbueAlignment"]?.GetValue<string>()}");
+            var sources = (root["imbueSources"] as JsonArray)?.Select(x => x?.GetValue<string>()).Where(x => !string.IsNullOrWhiteSpace(x)).ToArray();
+            if (sources?.Length > 0) summary.Append($" (from {string.Join(", ", sources)})");
+            summary.Append("\r\n");
+            if (shell != null)
+                summary.Append($"   Aura: {shell["appearanceKey"]?.GetValue<string>()} in {shell["appearanceId"]?.GetValue<string>()}{shellNote}\r\n");
+            if (anchors.Length > 0)
+                summary.Append($"   Particles: {string.Join(", ", particleIds)} at {anchors.Length} point(s) — {string.Join(", ", anchors)}\r\n");
+            foreach (var note in (root["notes"] as JsonArray) ?? new JsonArray())
+                if (note?.GetValue<string>() is string text) summary.Append($"   {text}\r\n");
+
+            return new ResolvedWeaponEffectPayload(root.ToJsonString(), summary.ToString().TrimEnd());
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Downloads an "Image/0x…" backend path into the preview cache and returns its viewer URL.</summary>
+    async Task<string?> CacheEffectImageAsync(string imagePath)
+    {
+        try
+        {
+            var id = imagePath.Contains('/') ? imagePath[(imagePath.LastIndexOf('/') + 1)..] : imagePath;
+            string safe = id.Replace("0x", "", StringComparison.OrdinalIgnoreCase);
+            string png = Path.Combine(previewCache, $"vfx_{safe}.png");
+
+            if (!File.Exists(png) || new FileInfo(png).Length < 32)
+            {
+                using var ir = await http.GetAsync($"Image/{Uri.EscapeDataString(id)}");
+                if (!ir.IsSuccessStatusCode) return null;
+                await using var fs = File.Create(png);
+                await ir.Content.CopyToAsync(fs);
+            }
+
+            if (new FileInfo(png).Length < 32) return null;
+            return $"https://ddocache.ddo/{Uri.EscapeDataString(Path.GetFileName(png))}?v={File.GetLastWriteTimeUtc(png).Ticks}";
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Exports an effect Setup (the aura shell mesh) to a cached GLB and returns its viewer URL.</summary>
+    async Task<string?> ExportEffectSetupAsync(string setupId, int generation)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(setupId) || setupId == "0x00000000") return null;
+
+            string safe = setupId.Replace("0x", "", StringComparison.OrdinalIgnoreCase);
+            string glb = Path.Combine(previewCache, $"vfx_aura_{safe}.glb");
+
+            if (!File.Exists(glb) || new FileInfo(glb).Length < 64)
+            {
+                var exe = Path.Combine(AppContext.BaseDirectory, "exporter", "DDOGlbExporter.exe");
+                if (!File.Exists(exe)) return null;
+
+                var psi = new ProcessStartInfo(exe, $"{setupId} \"{glb}\"")
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+                ConfigureExporterEnvironment(psi);
+                using var proc = Process.Start(psi)!;
+                await proc.StandardOutput.ReadToEndAsync();
+                await proc.StandardError.ReadToEndAsync();
+                await proc.WaitForExitAsync();
+                if (generation != previewGeneration || proc.ExitCode != 0) return null;
+            }
+
+            if (!File.Exists(glb) || new FileInfo(glb).Length < 64) return null;
+            return $"https://ddocache.ddo/{Uri.EscapeDataString(Path.GetFileName(glb))}?v={File.GetLastWriteTimeUtc(glb).Ticks}";
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     async Task ResolveVisualEffectsAsync(AssetRow row, int generation, string? dressingSlot = null)
     {
         string? slotJs = string.IsNullOrWhiteSpace(dressingSlot) ? null : JsonSerializer.Serialize(dressingSlot);
@@ -2706,6 +2852,18 @@ public sealed class MainForm : Form
 
         try
         {
+            // 1.7.3: prefer the weapon's real imbue/alignment effects — particle systems at the
+            // weapon's own holding locations plus a tinted aura shell. The heuristic resolver below
+            // stays for everything that has no resolved effects (armor, scenery, unimbued weapons).
+            var resolved = await ResolveWeaponEffectsPayloadAsync(row, generation);
+            if (resolved != null)
+            {
+                if (generation != previewGeneration) return;
+                await ApplyTargetAsync(resolved.Payload);
+                if (slotJs == null) details.Text += resolved.Summary;
+                return;
+            }
+
             var parts = new List<string>();
             if (row.DbId != 0) parts.Add($"db=0x{row.DbId:X8}");
             if (row.VisualDesc != 0) parts.Add($"visual=0x{row.VisualDesc:X8}");

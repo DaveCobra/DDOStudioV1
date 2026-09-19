@@ -17,7 +17,7 @@ The viewer supports:
 - compatible animation browsing and playback
 - class-based viewer defaults: Weapon records use Position Y `1.40x`, Rotate X `90°`, with the other transform axes at zero
 - Weapon previews prefer looping animation `0x05005943` when it is compatible; other models prefer `0x05000440`, and Weapons fall back to `0x05000440` when the spinning clip is unavailable
-- neutral scene lighting plus user-selected equirectangular sky/HDR or six-face cubemap imagery
+- neutral scene lighting over a generated studio environment, plus optional user-selected equirectangular sky/HDR or six-face cubemap imagery
 - GLB export using the same model/material/appearance pipeline as preview
 
 Model transforms and pedestal transforms are separate scene objects. Moving or rotating a model does not move the pedestal.

@@ -13,7 +13,7 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.Mvc.NewtonsoftJson" Version="10.0.3" />
-    <PackageReference Include="VoK.Sdk" Version="4.3.5" />
+    <PackageReference Include="VoK.Sdk" Version="5.0.0-alpha.577" />
   </ItemGroup>
 
 </Project>
