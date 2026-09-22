@@ -28,11 +28,34 @@ packages/
 installer/Output/
 Output/
 
+# Packaged/staged build output
+release/
+
+# Build-script download cache (three.js and viewer loaders)
+.build-cache/
+
+# MSBuild diagnostic logs
+*.binlog
+
 # Runtime logs, caches, and local data
 *.log
 cache/
 temp/
 tmp/
+
+# Machine-local NuGet feed config (hardcodes a local SDK output path)
+/NuGet.config
+
+# Agent/editor local state
+.claude/settings.local.json
+
+# Editor scratch and merge leftovers
+*~
+*.swp
+*.bak
+*.orig
+*.rej
+*.tmp
 
 # OS metadata
 .DS_Store

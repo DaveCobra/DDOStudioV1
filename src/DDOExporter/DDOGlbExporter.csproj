@@ -11,6 +11,6 @@
     <Version>1.7.2</Version>
 </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="VoK.Sdk" Version="4.3.5" />
+    <PackageReference Include="VoK.Sdk" Version="5.0.0-alpha.577" />
   </ItemGroup>
 </Project>

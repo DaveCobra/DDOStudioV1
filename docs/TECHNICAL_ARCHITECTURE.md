@@ -69,7 +69,16 @@ Inspection overlays and the SkeletonHelper follow the model root. Camera framing
 
 ## 9. Visual effects
 
-Visual effects are resolved independently from the base mesh. Effect discovery can include particle descriptions, texture/mask branches, scene-level modifiers, and auxiliary geometry. The viewer favors evidence-backed texture/mask reconstruction and treats ambiguous auxiliary geometry conservatively.
+Weapon imbue/alignment effects are resolved from the game's own effect chain by `WeaponEffect/resolve`, not inferred from texture references. An item's `Effect_OnCreationEffects` are applied to find its live `Weapon_Imbue_Type` / `Weapon_Imbue_Alignment`; the weapon entity's class script tables are then walked, following only the Switch branches those values select. That yields two layers:
+
+- **Aura shell** - the `MeshFX` node's entity, whose own script table applies an `AppearanceKey.Weaponaura_*` key into an Appearance table. The key's material modifier supplies the tint, opacity, diffuse texture and UV scroll rates, and the shell mesh is exported to GLB like any other Setup.
+- **Particles** - the `Weapon_Imbue_Powerup` script's `Particle` nodes, each carrying a PSDescription id and a holding location. One particle system is emitted per holding location **the weapon's Setup actually defines**; the client skips the rest, and so does the resolver. No weapon defines all nine weapon points.
+
+PSDescription records decode through VoK.Sdk into emitters and per-particle keyframes (Waveform-driven velocity, lifespan, scale and rotation; keyframed colour and size; sprite-sheet frame counts). The viewer's `vfx-particles.js` evaluates those Waveforms per frame and drives pooled additive sprites, converting DDO's Z-up positions and directions with `(x, y, z) -> (x, z, -y)` to match the exporter's scene root.
+
+Assets with no resolved effects fall back to the older heuristic resolver (`VisualEffect/resolve`), which discovers particle descriptions, texture/mask branches, scene-level modifiers and auxiliary geometry, favors evidence-backed texture/mask reconstruction, and treats ambiguous auxiliary geometry conservatively.
+
+All resolution lives in VoK.Sdk (`WeaponEffectResolver`, `ScriptGraph`, `PSDescription`, `Waveform`) rather than in this backend, so the same chain is available to any SDK consumer; the controller only turns surface ids into `Image/` URLs and enum values into names. The reverse-engineered formats behind it - the script chain, the aura key tables, and the PSDescription/Waveform binary layouts - are documented in `weapon-visual-effects.md` in the ddonexus repository.
 
 ## 10. Local storage and privacy
 

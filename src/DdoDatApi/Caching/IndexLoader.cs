@@ -109,7 +109,7 @@ public class IndexLoader {
                 if (treasureArray != null) {
                     indexData.TreasureTables.Add(id);
                     var items = new List<uint>();
-                    CollectTreasureItems(dbp.Properties.Values, items, new HashSet<uint> { id });
+                    CollectTreasureItems(dbp.Properties, items, new HashSet<uint> { id });
                     if (items.Count > 0)
                         treasureMap[id] = items;
                 }
@@ -190,7 +190,7 @@ public class IndexLoader {
                     continue;
 
                 if (child.GetWeenieType() == 0)
-                    CollectTreasureItems(child.Properties.Values, items, visited);
+                    CollectTreasureItems(child.Properties, items, visited);
                 else {
                     var normalized = val >= 0x70000000 && val < 0x71000000 ? val + 0x09000000 : val;
                     if (!items.Contains(normalized))
